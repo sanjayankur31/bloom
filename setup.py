@@ -10,18 +10,18 @@ setup(
         'bloom.generators.debian': [
             'bloom/generators/debian/templates/*',
             'bloom/generators/debian/templates/source/*'
+            'bloom/generators/rpm/templates/*',
         ]
     },
     include_package_data=True,
     install_requires=[
-        'argparse',
         'catkin-pkg >= 0.1.14',
         'distribute',
         'empy',
         'python-dateutil',
         'PyYAML',
         'rosdep >= 0.10.3',
-        'rosdistro >= 0.2.12',
+        'rosdistro',
         'vcstools >= 0.1.22',
     ],
     author='Tully Foote, William Woodall',
@@ -63,7 +63,8 @@ generation of platform specific source packages, like debian's src-debs.""",
         ],
         'bloom.generate_cmds': [
             'debian = bloom.generators.debian.generate_cmd:description',
-            'rosdebian = bloom.generators.rosdebian:description'
+            'rosdebian = bloom.generators.rosdebian:description',
+            'rpm = bloom.generators.rpm.generate_cmd:description'
         ]
     }
 )
