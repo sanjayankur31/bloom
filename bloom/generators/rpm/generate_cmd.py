@@ -60,6 +60,12 @@ except ImportError:
 
 
 def prepare_arguments(parser):
+    """Add arguments to parser
+
+    Keyword arguments:
+    parser -- parser instance to add arguments to
+
+    """
     add = parser.add_argument
     add('package_path', nargs='?',
         help="path to or containing the package.xml of a package")
@@ -133,6 +139,16 @@ def main(args=None, get_subs_fn=None):
             if template_files is not None:
                 for template_file in template_files:
                     os.remove(os.path.normpath(template_file))
+
+            rpm_path = os.path.join(path, 'rpm')
+            #info(fmt("%s" % os.listdir(rpm_path)))
+
+            for filename in os.listdir(rpm_path):
+                if filename.startswith("spectemplate"):
+                    os.rename(os.path.join(rpm_path,filename),
+                              os.path.join(rpm_path,"ros-" + ros_distro + "-" +
+                                           pkg.name + ".spec"))
+
         except Exception as exc:
             debug(traceback.format_exc())
             error(type(exc).__name__ + ": " + str(exc), exit=True)
@@ -141,8 +157,8 @@ def main(args=None, get_subs_fn=None):
 
 # This describes this command to the loader
 description = dict(
-    title='rpm',
-    description="Generates rpm spec files for a catkin package",
+    title='srpm',
+    description="Generates srpm files for a catkin package",
     main=main,
     prepare_arguments=prepare_arguments
 )

@@ -41,6 +41,8 @@ import shutil
 import sys
 import traceback
 
+from textwrap import wrap
+
 from dateutil import tz
 
 from bloom.generators import BloomGenerator
@@ -131,7 +133,7 @@ def __place_template_folder(group, src, dst, gbp=False):
 def place_template_files(path, gbp=False):
     info(fmt("@!@{bf}==>@| Placing templates files in the 'rpm' folder."))
     rpm_path = os.path.join(path, 'rpm')
-    # Create/Clean the debian folder
+    # Create/Clean the destination folder
     if not os.path.exists(rpm_path):
         os.makedirs(rpm_path)
     # Place template files
@@ -243,7 +245,9 @@ def generate_substitutions_from_package(
     data['Name'] = package.name
     data['Version'] = package.version
     data['License'] = package.licenses
-    data['Description'] = debianize_string(package.description)
+    # wrap breaks it down into smaller lines
+    data['Description'] = wrap(sanitize_string(package.description))
+
     # Websites
     websites = [str(url) for url in package.urls if url.type == 'website']
     homepage = websites[0] if websites else ''
@@ -254,6 +258,8 @@ def generate_substitutions_from_package(
     data['DebianInc'] = deb_inc
     # Package name
     data['Package'] = sanitize_package_name(package.name)
+    # Ros version
+    data['RosVersion'] = ros_distro
     # Installation prefix
     data['InstallationPrefix'] = installation_prefix
     # Resolve dependencies
@@ -344,41 +350,8 @@ def process_template_files(path, subs):
     return __process_template_folder(rpm_dir, subs)
 
 
-def match_branches_with_prefix(prefix, get_branches):
-    debug("match_branches_with_prefix(" + str(prefix) + ", " +
-          str(get_branches()) + ")")
-    branches = []
-    # Match branches
-    existing_branches = get_branches()
-    for branch in existing_branches:
-        if branch.startswith('remotes/origin/'):
-            branch = branch.split('/', 2)[-1]
-        if branch.startswith(prefix):
-            branches.append(branch)
-    return list(set(branches))
 
-
-def get_package_from_branch(branch):
-    with inbranch(branch):
-        try:
-            package_data = get_package_data(branch)
-        except SystemExit:
-            return None
-        if type(package_data) not in [list, tuple]:
-            # It is a ret code
-            DebianGenerator.exit(package_data)
-    names, version, packages = package_data
-    if type(names) is list and len(names) > 1:
-        DebianGenerator.exit(
-            "Debian generator does not support generating "
-            "from branches with multiple packages in them, use "
-            "the release generator first to split packages into "
-            "individual branches.")
-    if type(packages) is dict:
-        return packages.values()[0]
-
-
-def debianize_string(value):
+def sanitize_string(value):
     markup_remover = re.compile(r'<.*?>')
     value = markup_remover.sub('', value)
     value = re.sub('\s+', ' ', value)
@@ -390,7 +363,7 @@ def sanitize_package_name(name):
     return name.replace('_', '-')
 
 
-class RPMSpecGenerator(BloomGenerator):
+class RPMGenerator(BloomGenerator):
     title = 'rpm'
     description = "Generates rpms from the catkin meta data"
     has_run_rosdep = False
@@ -400,7 +373,7 @@ class RPMSpecGenerator(BloomGenerator):
     def prepare_arguments(self, parser):
         # Add command line arguments for this generator
         add = parser.add_argument
-        add('-i', '--debian-inc', help="debian increment number", default='0')
+        add('-i', '--rpm-inc', help="rpm increment number", default='0')
         add('-p', '--prefix', required=True,
             help="branch prefix to match, and from which create rpms"
                  " hint: if you want to match 'release/foo' use 'release'")
@@ -451,9 +424,9 @@ class RPMSpecGenerator(BloomGenerator):
             self.branch_args.extend(args)
 
     def summarize(self):
-        info("Generating source debs for the packages: " + str(self.names))
-        info("Debian Incremental Version: " + str(self.debian_inc))
-        info("Debian Distributions: " + str(self.distros))
+        info("Generating source rpms for the packages: " + str(self.names))
+        info("RPM Incremental Version: " + str(self.debian_inc))
+        info("RPM Distributions: " + str(self.distros))
 
     def get_branching_arguments(self):
         return self.branch_args
@@ -567,16 +540,300 @@ class RPMSpecGenerator(BloomGenerator):
             return config_store
         return json.loads(config_store)
 
-    def place_template_files(self, rpm_dir='debian'):
+    def place_template_files(self, rpm_dir='rpm'):
         # Create/Clean the debian folder
         if os.path.exists(rpm_dir):
             if self.interactive:
-                warning("Debian directory exists: " + rpm_dir)
+                warning("RPM directory exists: " + rpm_dir)
                 warning("Do you wish to overwrite it?")
                 if not maybe_continue('y'):
                     error("Answered no to continue, aborting.", exit=True)
             else:
-                warning("Overwriting Debian directory: " + rpm_dir)
+                warning("Overwriting RPM directory: " + rpm_dir)
+            execute_command('git rm -rf ' + rpm_dir)
+            execute_command('git commit -m "Clearing previous debian folder"')
+            if os.path.exists(rpm_dir):
+                shutil.rmtree(rpm_dir)
+        # Use generic place template files command
+        place_template_files('.', gbp=True)
+        # Commit results
+        # execute_command('git add ' + rpm_dir)
+        # execute_command('git commit -m "Placing debian template files"')
+
+    def get_releaser_history(self):
+        # Assumes that this is called in the target branch
+        patches_branch = 'patches/' + get_current_branch()
+        raw = show(patches_branch, 'releaser_history.json')
+        return None if raw is None else json.loads(raw)
+
+    def set_releaser_history(self, history):
+        # Assumes that this is called in the target branch
+        patches_branch = 'patches/' + get_current_branch()
+        debug("Writing release history to '{0}' branch".format(patches_branch))
+        with inbranch(patches_branch):
+            with open('releaser_history.json', 'w') as f:
+                f.write(json.dumps(history))
+            execute_command('git add releaser_history.json')
+            if has_changes():
+                execute_command('git commit -m "Store releaser history"')
+
+    def get_subs(self, package, debian_distro, releaser_history=None):
+        return generate_substitutions_from_package(
+            package,
+            self.os_name,
+            debian_distro,
+            self.rosdistro,
+            self.install_prefix,
+            self.debian_inc,
+            [p.name for p in self.packages.values()],
+            releaser_history=releaser_history,
+            fallback_resolver=missing_dep_resolver
+        )
+
+    def generate_debian(self, package, debian_distro):
+        info("Generating debian for {0}...".format(debian_distro))
+        # Try to retrieve the releaser_history
+        releaser_history = self.get_releaser_history()
+        # Generate substitution values
+        subs = self.get_subs(package, debian_distro, releaser_history)
+        # Use subs to create and store releaser history
+        releaser_history = [(v, (n, e)) for v, _, _, n, e in subs['changelogs']]
+        self.set_releaser_history(dict(releaser_history))
+        # Handle gbp.conf
+        subs['release_tag'] = self.get_release_tag(subs)
+        # Template files
+        template_files = process_template_files('.', subs)
+        # Remove any residual template files
+        execute_command('git rm -rf ' + ' '.join(template_files))
+        # Add changes to the debian folder
+        execute_command('git add debian')
+        # Commit changes
+        execute_command('git commit -m "Generated debian files for ' +
+                        debian_distro + '"')
+        # Return the subs for other use
+        return subs
+
+    def get_release_tag(self, data):
+        return 'release/{0}/{1}-{2}'.format(data['Name'], data['Version'],
+                                            self.debian_inc)
+
+    def generate_tag_name(self, data):
+        tag_name = '{Package}_{Version}-{DebianInc}_{Distribution}'
+        tag_name = 'debian/' + tag_name.format(**data)
+        return tag_name
+
+    def generate_branching_arguments(self, package, branch):
+        n = package.name
+        # Debian branch
+        deb_branch = 'debian/' + n
+        # Branch first to the debian branch
+        args = [[deb_branch, branch, False]]
+        # Then for each debian distro, branch from the base debian branch
+        args.extend([
+            ['debian/' + d + '/' + n, deb_branch, False] for d in self.distros
+        ])
+        return args
+
+    def summarize_package(self, package, distro, color='bluef'):
+        info(ansi(color) + "\n####" + ansi('reset'), use_prefix=False)
+        info(
+            ansi(color) + "#### Generating '" + ansi('boldon') + distro +
+            ansi('boldoff') + "' debian for package"
+            " '" + ansi('boldon') + package.name + ansi('boldoff') + "'" +
+            " at version '" + ansi('boldon') + package.version +
+            "-" + str(self.debian_inc) + ansi('boldoff') + "'" +
+            ansi('reset'),
+            use_prefix=False
+        )
+        info(ansi(color) + "####" + ansi('reset'), use_prefix=False)
+
+class SRPMGenerator(BloomGenerator):
+    title = 'srpm'
+    description = "Generates srpms from the catkin meta data"
+    has_run_rosdep = False
+    default_install_prefix = '/usr'
+    rosdistro = os.environ.get('ROS_DISTRO', 'groovy')
+
+    def prepare_arguments(self, parser):
+        # Add command line arguments for this generator
+        add = parser.add_argument
+        add('-i', '--rpm-inc', help="rpm increment number", default='0')
+        add('-p', '--prefix', required=True,
+            help="branch prefix to match, and from which create rpms"
+                 " hint: if you want to match 'release/foo' use 'release'")
+        add('--distros', nargs='+', required=False, default=[],
+            help='A list of rpm distros to generate for')
+        add('--install-prefix', default=None,
+            help="overrides the default installation prefix (/usr)")
+        add('--os-name', default='fedora',
+            help="overrides os_name, set to 'fedora' by default")
+
+    def handle_arguments(self, args):
+        self.interactive = args.interactive
+        self.debian_inc = args.debian_inc
+        self.os_name = args.os_name
+        self.distros = args.distros
+        if self.distros in [None, []]:
+            index = rosdistro.get_index(rosdistro.get_index_url())
+            release_file = rosdistro.get_release_file(index, self.rosdistro)
+            if self.os_name not in release_file.platforms:
+                error("No platforms defined for os '{0}' in release file for the '{1}' distro."
+                      .format(self.os_name, self.rosdistro), exit=True)
+            self.distros = release_file.platforms[self.os_name]
+        self.install_prefix = args.install_prefix
+        if args.install_prefix is None:
+            self.install_prefix = self.default_install_prefix
+        self.prefix = args.prefix
+        self.branches = match_branches_with_prefix(self.prefix, get_branches)
+        if len(self.branches) == 0:
+            error(
+                "No packages found, check your --prefix or --src arguments.",
+                exit=True
+            )
+        self.packages = {}
+        self.tag_names = {}
+        self.names = []
+        self.branch_args = []
+        self.debian_branches = []
+        for branch in self.branches:
+            package = get_package_from_branch(branch)
+            if package is None:
+                # This is an ignored package
+                continue
+            self.packages[package.name] = package
+            self.names.append(package.name)
+            args = self.generate_branching_arguments(package, branch)
+            # First branch is debian/[<rosdistro>/]<package>
+            self.debian_branches.append(args[0][0])
+            self.branch_args.extend(args)
+
+    def summarize(self):
+        info("Generating source rpms for the packages: " + str(self.names))
+        info("RPM Incremental Version: " + str(self.debian_inc))
+        info("RPM Distributions: " + str(self.distros))
+
+    def get_branching_arguments(self):
+        return self.branch_args
+
+    def update_rosdep(self):
+        update_rosdep()
+        self.has_run_rosdep = True
+
+    def pre_branch(self, destination, source):
+        if destination in self.debian_branches:
+            return
+        # Run rosdep update is needed
+        if not self.has_run_rosdep:
+            self.update_rosdep()
+        # Determine the current package being generated
+        name = destination.split('/')[-1]
+        distro = destination.split('/')[-2]
+        # Retrieve the package
+        package = self.packages[name]
+        # Report on this package
+        self.summarize_package(package, distro)
+
+    def pre_rebase(self, destination):
+        # Get the stored configs is any
+        patches_branch = 'patches/' + destination
+        config = self.load_original_config(patches_branch)
+        if config is not None:
+            curr_config = get_patch_config(patches_branch)
+            if curr_config['parent'] == config['parent']:
+                set_patch_config(patches_branch, config)
+
+    def post_rebase(self, destination):
+        name = destination.split('/')[-1]
+        # Retrieve the package
+        package = self.packages[name]
+        # Handle differently if this is a debian vs distro branch
+        if destination in self.debian_branches:
+            info("Placing rpm template files into '{0}' branch."
+                 .format(destination))
+            # Then this is a debian branch
+            # Place the raw template files
+            self.place_template_files()
+        else:
+            # This is a distro specific debian branch
+            # Determine the current package being generated
+            distro = destination.split('/')[-2]
+            # Create debians for each distro
+            with inbranch(destination):
+                data = self.generate_debian(package, distro)
+                # Create the tag name for later
+                self.tag_names[destination] = self.generate_tag_name(data)
+        # Update the patch configs
+        patches_branch = 'patches/' + destination
+        config = get_patch_config(patches_branch)
+        # Store it
+        self.store_original_config(config, patches_branch)
+        # Modify the base so import/export patch works
+        current_branch = get_current_branch()
+        if current_branch is None:
+            error("Could not determine current branch.", exit=True)
+        config['base'] = get_commit_hash(current_branch)
+        # Set it
+        set_patch_config(patches_branch, config)
+
+    def post_patch(self, destination, color='bluef'):
+        if destination in self.debian_branches:
+            return
+        # Tag after patches have been applied
+        with inbranch(destination):
+            # Tag
+            tag_name = self.tag_names[destination]
+            if tag_exists(tag_name):
+                if self.interactive:
+                    warning("Tag exists: " + tag_name)
+                    warning("Do you wish to overwrite it?")
+                    if not maybe_continue('y'):
+                        error("Answered no to continue, aborting.", exit=True)
+                else:
+                    warning("Overwriting tag: " + tag_name)
+            else:
+                info("Creating tag: " + tag_name)
+            execute_command('git tag -f ' + tag_name)
+        # Report of success
+        name = destination.split('/')[-1]
+        package = self.packages[name]
+        distro = destination.split('/')[-2]
+        info(ansi(color) + "####" + ansi('reset'), use_prefix=False)
+        info(
+            ansi(color) + "#### " + ansi('greenf') + "Successfully" +
+            ansi(color) + " generated '" + ansi('boldon') + distro +
+            ansi('boldoff') + "' debian for package"
+            " '" + ansi('boldon') + package.name + ansi('boldoff') + "'" +
+            " at version '" + ansi('boldon') + package.version +
+            "-" + str(self.debian_inc) + ansi('boldoff') + "'" +
+            ansi('reset'),
+            use_prefix=False
+        )
+        info(ansi(color) + "####\n" + ansi('reset'), use_prefix=False)
+
+    def store_original_config(self, config, patches_branch):
+        with inbranch(patches_branch):
+            with open('debian.store', 'w+') as f:
+                f.write(json.dumps(config))
+            execute_command('git add debian.store')
+            if has_changes():
+                execute_command('git commit -m "Store original patch config"')
+
+    def load_original_config(self, patches_branch):
+        config_store = show(patches_branch, 'debian.store')
+        if config_store is None:
+            return config_store
+        return json.loads(config_store)
+
+    def place_template_files(self, rpm_dir='rpm'):
+        # Create/Clean the debian folder
+        if os.path.exists(rpm_dir):
+            if self.interactive:
+                warning("RPM directory exists: " + rpm_dir)
+                warning("Do you wish to overwrite it?")
+                if not maybe_continue('y'):
+                    error("Answered no to continue, aborting.", exit=True)
+            else:
+                warning("Overwriting RPM directory: " + rpm_dir)
             execute_command('git rm -rf ' + rpm_dir)
             execute_command('git commit -m "Clearing previous debian folder"')
             if os.path.exists(rpm_dir):

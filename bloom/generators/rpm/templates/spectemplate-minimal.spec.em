@@ -1,19 +1,23 @@
 %global module_name @(Package)
 
-Name:           ros-groovy-%{module_name}
+Name:           ros-@(RosVersion)-%{module_name}
 Version:        @(Version)
 Release:        1%{?dist}
-Summary:        @(Description)
+Summary:        ROS @(RosVersion) %{module_name} module.
 
 License:        @(' and  '.join(License))
 URL:            @(Homepage)
 Source0:        
 
+# All catkinized packages require catkin
 BuildRequires:  @(' '.join(BuildDepends))
 Requires:       @(' '.join(Depends))
 
+Provides:       ros-@(RosVersion)-%{module_name}
+
 %description
-%{Summary}
+@('\n'.join(Description))
+
 
 
 %prep
@@ -21,9 +25,11 @@ Requires:       @(' '.join(Depends))
 
 
 %build
-
+%cmake 
+make %{?_smp_mflags}
 
 %install
+make install DESTDIR=$RPM_BUILD_ROOT
 
 
 %clean

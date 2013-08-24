@@ -1,5 +1,6 @@
-from .generator import RPMSpecGenerator
+from .generator import RPMGenerator
+from .generator import SRPMGenerator
 #from .generator import sanitize_package_name
 
 #__all__ = ['RPMSpecGenerator', 'sanitize_package_name']
-__all__ = ['RPMSpecGenerator']
+__all__ = ['RPMGenerator', 'SRPMGenerator']
